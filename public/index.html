@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>AURA-QX PRO SMC (Vercel)</title>
+    <title>AURA-QX PRO SMC</title>
     
     <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
     <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
@@ -43,9 +43,8 @@
         const { useState, useEffect, useRef } = React;
         const { ComposedChart, Bar, XAxis, YAxis, Tooltip, ReferenceArea, ReferenceLine, ReferenceDot, CartesianGrid, Cell, ResponsiveContainer } = window.Recharts;
 
-        // --- 1. DEFINING ALL COMPONENTS FIRST (To avoid ReferenceError) ---
-
-        // Candle Shape
+        // --- 1. COMPONENT DEFINITIONS (Defined BEFORE use) ---
+        
         const CandleShape = ({ x, y, width, height, payload }) => {
             const { open, close, high, low, color } = payload;
             const priceRange = high - low;
@@ -114,7 +113,11 @@
 
         // Trading Panel Component
         const TradingPanel = ({ currentPrice, balance, setBalance }) => {
-            const [positions, setPositions] = useState([]);
+            // Load state from LocalStorage
+            const [positions, setPositions] = useState(() => {
+                const saved = localStorage.getItem('aura_positions');
+                return saved ? JSON.parse(saved) : [];
+            });
             const [pendingOrders, setPendingOrders] = useState([]);
             const [orderType, setOrderType] = useState('MARKET');
             const [qty, setQty] = useState(1000);
@@ -123,10 +126,17 @@
             const [sl, setSl] = useState('');
             const [activeTab, setActiveTab] = useState('POSITIONS');
 
+            // Save state
+            useEffect(() => {
+                localStorage.setItem('aura_positions', JSON.stringify(positions));
+                localStorage.setItem('aura_balance', balance.toString());
+            }, [positions, balance]);
+
             useEffect(() => { if (orderType === 'LIMIT' && !limitPrice && currentPrice) setLimitPrice(currentPrice.toFixed(2)); }, [orderType, currentPrice]);
 
             useEffect(() => {
                 if (!currentPrice) return;
+                // Limit Fills
                 const newPositions = [];
                 const remainingOrders = pendingOrders.filter(order => {
                     const price = parseFloat(order.limitPrice);
@@ -141,6 +151,7 @@
                 });
                 if (newPositions.length > 0) { setPendingOrders(remainingOrders); setPositions(prev => [...prev, ...newPositions]); }
 
+                // TP/SL Checks
                 const active = positions.filter(pos => {
                     let close = false;
                     if (pos.sl) { if (pos.type === 'LONG' && currentPrice <= pos.sl) close = true; if (pos.type === 'SHORT' && currentPrice >= pos.sl) close = true; }
@@ -210,7 +221,12 @@
             
             const [showLiquidity, setShowLiquidity] = useState(true);
             const [aiMode, setAiMode] = useState(false);
-            const [balance, setBalance] = useState(10000);
+            
+            // Balance with Auto-Load
+            const [balance, setBalance] = useState(() => {
+                const saved = localStorage.getItem('aura_balance');
+                return saved ? parseFloat(saved) : 10000;
+            });
 
             const wsRef = useRef(null);
             const chartContainerRef = useRef(null);
@@ -224,6 +240,7 @@
                         let cleanSymbol = symbol.toUpperCase();
                         if(!cleanSymbol.includes("/")) cleanSymbol += "/USDT";
                         
+                        // Use fetch instead of websocket for Vercel backend
                         const res = await fetch(`/api/scan?symbol=${cleanSymbol}&timeframe=1h&ai_mode=${aiMode}`);
                         const data = await res.json();
                         
@@ -240,6 +257,7 @@
                 return () => clearInterval(interval);
             }, [symbol, aiMode]);
 
+            // Mock Symbols list for search (Since we can't websocket stream it instantly in serverless)
             useEffect(() => {
                 setSymbolList(["BTC/USDT", "ETH/USDT", "SOL/USDT", "XRP/USDT", "BNB/USDT", "ADA/USDT", "DOGE/USDT", "AVAX/USDT", "LINK/USDT", "PEPE/USDT", "WIF/USDT"]);
             }, []);
@@ -260,12 +278,9 @@
 
             const handleMouseMove = (e) => {
                 if(e?.chartY && chartContainerRef.current) {
-                    const h = chartContainerRef.current.clientHeight - 30; // Chart height minus margins
-                    const p = e.chartY - 15; // Mouse Y relative to chart top margin
-                    if(h>0 && isFinite(maxPrice)) {
-                        const price = maxPrice - (p/h)*(maxPrice-minPrice);
-                        setCursorPrice(price);
-                    }
+                    const h = chartContainerRef.current.clientHeight - 30; 
+                    const p = e.chartY - 15; 
+                    if(h>0 && isFinite(maxPrice)) setCursorPrice(maxPrice - (p/h)*(maxPrice-minPrice));
                 }
             };
 
@@ -275,9 +290,7 @@
                         <div className="flex items-center gap-6"><div className="flex flex-col flex-shrink-0"><span className="font-bold text-emerald-500 tracking-wider text-lg">AURA-QX</span><span className="text-[10px] text-zinc-500">PRO TERMINAL</span></div><div className="h-10 w-[1px] bg-white/10"></div><div className="relative"><span className="text-[10px] text-zinc-400 block mb-1">ASSET PAIR</span><input type="text" value={symbol} onFocus={()=>setShowDropdown(true)} onChange={e=>{setSymbol(e.target.value.toUpperCase()); setShowDropdown(true)}} className="input-glass px-3 py-1.5 rounded w-40 text-sm font-mono outline-none focus:border-emerald-500" />{showDropdown && filteredSymbols.length>0 && <div className="dropdown-glass rounded shadow-xl mt-1">{filteredSymbols.map(s=><div key={s} onClick={()=>{selectSymbol(s)}} className="dropdown-item">{s}</div>)}</div>}</div></div>
                         <div className="flex items-center gap-3"><span className="text-[10px] text-zinc-400">TIMEFRAMES</span><div className="flex bg-black/50 rounded p-1.5 gap-1">{availableTFs.map(tf => (<button key={tf} onClick={() => toggleTF(tf)} className={`text-xs px-3 py-1.5 rounded font-bold transition-colors ${selectedTFs.includes(tf) ? 'btn-active' : 'btn-inactive hover:bg-white/10'}`}>{tf}</button>))}</div></div>
                         <div className="flex items-center gap-4"><div className="flex flex-col"><span className="text-[10px] text-zinc-400 mb-1">VISUALS</span><div className="flex gap-2"><button onClick={()=>setShowLiquidity(!showLiquidity)} className={`px-3 py-1 rounded text-[10px] font-bold border transition-all ${showLiquidity ? 'bg-yellow-500/10 border-yellow-500 text-yellow-500' : 'border-zinc-700 text-zinc-500 hover:bg-zinc-800'}`}>LIQ</button><button onClick={toggleAi} className={`px-3 py-1 rounded text-[10px] font-bold border transition-all flex items-center gap-1 ${aiMode ? 'bg-purple-600/20 border-purple-500 text-purple-300 shadow-[0_0_10px_rgba(168,85,247,0.3)]' : 'border-zinc-700 text-zinc-500 hover:bg-zinc-800'}`}>AI</button></div></div></div>
-                        <div className="flex items-center gap-6"><button onClick={()=>handleScan()} className="bg-emerald-600 hover:bg-emerald-500 text-white px-8 py-2 rounded text-sm font-bold shadow-lg shadow-emerald-900/20">SCAN</button><div className="text-right border-l border-white/10 pl-6"><div className="text-3xl font-bold text-white tracking-tighter">${market.price.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}</div>
-                        <div className={`text-[9px] font-mono text-center px-1 rounded mt-1 ${market.is_simulation ? 'bg-red-500/20 text-red-400' : 'bg-emerald-500/20 text-emerald-400'}`}>{market.is_simulation ? 'DATA: SIMULATED' : 'DATA: LIVE BINANCE'}</div>
-                        </div></div>
+                        <div className="flex items-center gap-6"><div className="text-right border-l border-white/10 pl-6"><div className="text-3xl font-bold text-white tracking-tighter">${market.price.toLocaleString(undefined, {minimumFractionDigits: 2})}</div><div className={`text-[9px] font-mono text-center px-1 rounded mt-1 ${market.is_simulation ? 'bg-red-500/20 text-red-400' : 'bg-emerald-500/20 text-emerald-400'}`}>{market.is_simulation ? 'DATA: SIMULATED' : 'DATA: LIVE BINANCE'}</div></div></div>
                     </div>
 
                     <div className="flex-1 grid grid-cols-12 gap-3 overflow-hidden">
