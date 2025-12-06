@@ -1,7 +1,7 @@
 {
   "builds": [
     {
-      "src": "index.py",
+      "src": "api/index.py",
       "use": "@vercel/python"
     },
     {
@@ -13,4 +13,3 @@
     { "source": "/api/(.*)", "destination": "/api/index.py" }
   ]
 }
-
