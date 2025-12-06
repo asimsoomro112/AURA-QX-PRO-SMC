@@ -1,5 +1,6 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 import pandas as pd
 import numpy as np
 import ccxt.async_support as ccxt
@@ -32,17 +33,16 @@ class SMCEngine:
         return "RANGING"
 
     @staticmethod
-    def detect_market_structure(df: pd.DataFrame) -> List[Dict]:
+    def detect_structure_points(df: pd.DataFrame):
         points = []
         window = 5
-        # Ensure we don't go out of bounds
         for i in range(window, len(df) - window):
             ts = df['timestamp'].iloc[i].strftime('%H:%M')
             if df['high'].iloc[i] == df['high'].iloc[i-window:i+window+1].max():
                 points.append({"index": i, "timestamp": ts, "price": float(df['high'].iloc[i]), "type": "HH", "color": "#ef4444"})
             if df['low'].iloc[i] == df['low'].iloc[i-window:i+window+1].min():
                 points.append({"index": i, "timestamp": ts, "price": float(df['low'].iloc[i]), "type": "HL", "color": "#10b981"})
-        return points[-10:]
+        return points[-15:]
 
     @staticmethod
     def find_fvgs(df: pd.DataFrame, timeframe: str) -> List[Dict]:
@@ -61,34 +61,23 @@ class SMCEngine:
     def find_order_blocks(df: pd.DataFrame, timeframe: str) -> List[Dict]:
         obs = []
         current_price = df['close'].iloc[-1]
-        
-        # Determine opacity based on timeframe
         depth_map = {"1H": 0.2, "4H": 0.3}
         opacity = depth_map.get(timeframe.upper(), 0.2)
-        
         for i in range(len(df) - 3):
             candle, next_c = df.iloc[i], df.iloc[i+1]
             body = abs(candle['close'] - candle['open'])
             full_range = candle['high'] - candle['low']
-            
             if full_range == 0 or (body / full_range) < 0.20: continue 
-
             move_size = abs(next_c['close'] - next_c['open'])
             ob_type, top, bottom, color = None, 0, 0, ""
-
             if candle['close'] < candle['open']: 
                 if next_c['close'] > candle['high'] and move_size > body * 1.2:
                     if current_price > candle['high']: ob_type, top, bottom, color = f"{timeframe} Bull OB", float(candle['high']), float(candle['low']), "#10b981"
             elif candle['close'] > candle['open']:
                 if next_c['close'] < candle['low'] and move_size > body * 1.2:
                     if current_price < candle['low']: ob_type, top, bottom, color = f"{timeframe} Bear OB", float(candle['high']), float(candle['low']), "#ef4444"
-            
             if ob_type:
-                is_mitigated = False
-                for j in range(i + 2, len(df) - 1):
-                    if "Bull" in ob_type and df.iloc[j]['low'] <= top: is_mitigated = True
-                    if "Bear" in ob_type and df.iloc[j]['high'] >= bottom: is_mitigated = True
-                
+                is_mitigated = any((("Bull" in ob_type and df.iloc[j]['low'] <= top) or ("Bear" in ob_type and df.iloc[j]['high'] >= bottom)) for j in range(i + 2, len(df) - 1))
                 if not is_mitigated:
                     is_poi = "4H" in timeframe
                     obs.append({ "type": ob_type, "top": top, "bottom": bottom, "color": color, "opacity": opacity, "index": i, "is_poi": is_poi })
@@ -98,86 +87,65 @@ class SMCEngine:
     def generate_combined_heatmap(df: pd.DataFrame, orderbook: Dict) -> List[Dict]:
         zones = []
         current_price = df['close'].iloc[-1]
-        
-        # Structural Liquidity
         for i in range(5, len(df)-5):
             window = df.iloc[i-5:i+5]
             if df['high'].iloc[i] == window['high'].max():
                 px = float(df['high'].iloc[i])
-                if 0.90 * current_price < px < 1.10 * current_price:
-                    zones.append({"price": px, "color": "#facc15", "type": "STOP_HUNT_HIGH", "style": "dashed"})
+                if 0.90 * current_price < px < 1.10 * current_price: zones.append({"price": px, "color": "#facc15", "type": "STOP_HUNT_HIGH", "style":"dashed"})
             if df['low'].iloc[i] == window['low'].min():
                 px = float(df['low'].iloc[i])
-                if 0.90 * current_price < px < 1.10 * current_price:
-                    zones.append({"price": px, "color": "#facc15", "type": "STOP_HUNT_LOW", "style": "dashed"})
-
-        # Whale Walls
+                if 0.90 * current_price < px < 1.10 * current_price: zones.append({"price": px, "color": "#facc15", "type": "STOP_HUNT_LOW", "style":"dashed"})
         if orderbook:
-            bids = orderbook.get('bids', [])
-            asks = orderbook.get('asks', [])
-            bids = [b for b in bids if b[0] > current_price * 0.95]
-            asks = [a for a in asks if a[0] < current_price * 1.05]
-
-            if len(bids) > 0:
-                avg_bid = np.median([b[1] for b in bids])
-                for b in sorted([x for x in bids if x[1] > avg_bid * 1.5], key=lambda x:x[1], reverse=True)[:3]:
-                    zones.append({"price": b[0], "color": "#00ff88", "type": f"🐳 BUY: {int(b[1])}", "style": "solid"})
-
-            if len(asks) > 0:
-                avg_ask = np.median([a[1] for a in asks])
-                for a in sorted([x for x in asks if x[1] > avg_ask * 1.5], key=lambda x:x[1], reverse=True)[:3]:
-                    zones.append({"price": a[0], "color": "#ff3355", "type": f"🐻 SELL: {int(a[1])}", "style": "solid"})
-
+            bids = [b for b in orderbook.get('bids', []) if b[0] > current_price * 0.95]
+            asks = [a for a in orderbook.get('asks', []) if a[0] < current_price * 1.05]
+            if bids:
+                avg = np.median([b[1] for b in bids])
+                for b in sorted([x for x in bids if x[1] > avg*1.5], key=lambda x:x[1], reverse=True)[:3]:
+                    zones.append({"price": b[0], "color": "#00ff88", "type": f"🐳 BUY: {int(b[1])}", "style":"solid"})
+            if asks:
+                avg = np.median([a[1] for a in asks])
+                for a in sorted([x for x in asks if x[1] > avg*1.5], key=lambda x:x[1], reverse=True)[:3]:
+                    zones.append({"price": a[0], "color": "#ff3355", "type": f"🐻 SELL: {int(a[1])}", "style":"solid"})
         return zones
 
 class AIAgent:
     @staticmethod
-    def analyze_signal(signal: Dict, df: pd.DataFrame):
-        if not signal: return None, "Scanning market structure..."
-        last_candle = df.iloc[-1]
-        body = abs(last_candle['close'] - last_candle['open'])
-        wick = (last_candle['high'] - max(last_candle['close'], last_candle['open'])) if "SHORT" in signal['type'] else (min(last_candle['close'], last_candle['open']) - last_candle['low'])
-        
+    def analyze(signal, df):
+        if not signal: return None, "Scanning..."
+        last = df.iloc[-1]
+        body = abs(last['close'] - last['open'])
+        wick = (last['high'] - max(last['close'], last['open'])) if "SHORT" in signal['type'] else (min(last['close'], last['open']) - last['low'])
         if wick > body * 0.4: return signal, "✅ APPROVED: Strong rejection wick detected."
         return signal, "⚠️ CAUTION: No rejection wick yet."
 
-# --- MAIN ENDPOINT ---
-@app.get("/api/scan")
-async def scan(symbol: str = "BTC/USDT", timeframe: str = "1h", ai_mode: bool = False):
-    exchange = ccxt.binance({'enableRateLimit': True, 'options': {'defaultType': 'future'}, 'timeout': 5000})
+# --- MAIN LOGIC ---
+async def run_analysis(symbol: str, timeframe: str, ai_mode: bool):
+    exchange = ccxt.binance({'enableRateLimit': True, 'options': {'defaultType': 'future'}})
     smc = SMCEngine()
     ai = AIAgent()
     
     try:
-        # Optimization: Don't load all markets (too heavy for serverless), just fetch symbol directly
         tfs = [timeframe]
         if timeframe != "4h": tfs.append("4h")
         
         data_store = {}
         orderbook = None
 
-        # Fetch Data
         for tf in tfs:
             try:
                 ohlcv = await exchange.fetch_ohlcv(symbol, tf, limit=LIMIT)
                 df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
                 df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
                 data_store[tf] = df
-            except Exception as e:
-                # If fail, just continue (will fail gracefully later if primary missing)
-                print(f"Error fetching {tf}: {e}")
+            except: pass
 
-        try:
-            orderbook = await exchange.fetch_order_book(symbol, limit=50)
-        except:
-            orderbook = None
+        try: orderbook = await exchange.fetch_order_book(symbol, limit=50)
+        except: orderbook = None
             
         await exchange.close()
 
-        if timeframe not in data_store:
-            raise Exception("Primary data fetch failed")
+        if timeframe not in data_store: raise Exception("Data fetch failed")
 
-        # Analysis
         df_primary = data_store[timeframe]
         chart_df = df_primary.iloc[-300:].copy().reset_index(drop=True)
         current_price = float(chart_df['close'].iloc[-1])
@@ -192,20 +160,17 @@ async def scan(symbol: str = "BTC/USDT", timeframe: str = "1h", ai_mode: bool = 
             all_zones.extend(smc.find_fvgs(df_slice, tf.upper()))
 
         heatmap = smc.generate_combined_heatmap(chart_df, orderbook)
-        structure = smc.detect_market_structure(chart_df)
+        structure = smc.detect_structure_points(chart_df)
         
         signal = None
         for zone in all_zones:
             if zone['bottom'] <= current_price <= zone['top']:
                 is_poi = zone.get('is_poi', False)
-                if "Bull" in zone['type']:
-                    signal = {"type": f"LONG {'POI' if is_poi else 'TEST'}", "confidence": 88 if is_poi else 75, "reason": f"Testing {zone['type']}", "entry": current_price, "stop": zone['bottom'], "target": current_price*1.03}
-                elif "Bear" in zone['type']:
-                    signal = {"type": f"SHORT {'POI' if is_poi else 'TEST'}", "confidence": 88 if is_poi else 75, "reason": f"Testing {zone['type']}", "entry": current_price, "stop": zone['top'], "target": current_price*0.97}
+                if "Bull" in zone['type']: signal = {"type": f"LONG {'POI' if is_poi else 'TEST'}", "confidence": 85, "reason": f"Testing {zone['type']}", "entry": current_price, "stop": zone['bottom'], "target": current_price*1.03}
+                elif "Bear" in zone['type']: signal = {"type": f"SHORT {'POI' if is_poi else 'TEST'}", "confidence": 85, "reason": f"Testing {zone['type']}", "entry": current_price, "stop": zone['top'], "target": current_price*0.97}
 
         ai_narrative = ""
-        if ai_mode:
-            signal, ai_narrative = ai.analyze_signal(signal, chart_df)
+        if ai_mode: signal, ai_narrative = ai.analyze(signal, chart_df)
         
         chart_data_clean = chart_df.replace({np.nan: None})
         chart_data_clean['timestamp'] = chart_data_clean['timestamp'].dt.strftime('%H:%M')
@@ -225,10 +190,15 @@ async def scan(symbol: str = "BTC/USDT", timeframe: str = "1h", ai_mode: bool = 
 
     except Exception as e:
         await exchange.close()
-        # Fallback Simulation Data if Binance Fails
-        return {
-            "symbol": symbol,
-            "price": 90000,
-            "is_simulation": True,
-            "error": str(e)
-        }
+        return {"symbol": symbol, "price": 0, "is_simulation": True, "error": str(e)}
+
+# --- UNIVERSAL ROUTE (FIXES NOT FOUND) ---
+# Ye function har tarah ki request (/scan, /api/scan, etc) ko pakad lega
+@app.get("/{full_path:path}")
+async def catch_all(full_path: str, symbol: str = "BTC/USDT", timeframe: str = "1h", ai_mode: bool = False):
+    # Agar path 'scan' ya 'api/scan' contain karta hai to analysis run karo
+    if "scan" in full_path:
+        return await run_analysis(symbol, timeframe, ai_mode)
+    
+    # Default/Root response
+    return {"status": "AURA-QX Engine Online", "path_accessed": full_path}
