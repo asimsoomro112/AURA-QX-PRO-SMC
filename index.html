@@ -3,13 +3,15 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>AURA-QX PRO SMC (Mobile Ready)</title>
+    <title>AURA-QX PRO SMC (Vercel)</title>
+    
     <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
     <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
     <script src="https://unpkg.com/prop-types/prop-types.min.js"></script>
     <script src="https://unpkg.com/recharts@2.10.3/umd/Recharts.js"></script>
     <script src="https://cdn.tailwindcss.com"></script>
+
     <style>
         @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;700&display=swap');
         body { font-family: 'JetBrains Mono', monospace; background: #050505; color: #e0e0e0; overflow: hidden; }
@@ -31,6 +33,7 @@
     <div id="root"></div>
 
     <script type="text/babel">
+        // --- SAFE LOGGING ---
         const originalConsoleError = console.error;
         console.error = (...args) => {
             if (typeof args[0] === 'string' && /defaultProps/.test(args[0])) return;
@@ -40,8 +43,9 @@
         const { useState, useEffect, useRef } = React;
         const { ComposedChart, Bar, XAxis, YAxis, Tooltip, ReferenceArea, ReferenceLine, ReferenceDot, CartesianGrid, Cell, ResponsiveContainer } = window.Recharts;
 
-        // --- 1. COMPONENT DEFINITIONS (Must be defined before use) ---
-        
+        // --- 1. DEFINING ALL COMPONENTS FIRST (To avoid ReferenceError) ---
+
+        // Candle Shape
         const CandleShape = ({ x, y, width, height, payload }) => {
             const { open, close, high, low, color } = payload;
             const priceRange = high - low;
@@ -53,7 +57,7 @@
             return <g><line x1={center} y1={y} x2={center} y2={y + height} stroke={color} strokeWidth={1} /><rect x={x} y={bodyY} width={width} height={bodyH} fill={color} /></g>;
         };
 
-        // Current Price Label (Green)
+        // Current Price Label (The Green Box)
         const CurrentPriceLabel = ({ viewBox, value }) => {
             const { y, width } = viewBox;
             if (!value || isNaN(value)) return null;
@@ -67,7 +71,7 @@
             );
         };
 
-        // Cursor Label (White/Black)
+        // Cursor Label (The White Box)
         const CursorLabel = ({ viewBox, value }) => {
             const { y, width } = viewBox;
             if (!value || isNaN(value)) return null;
@@ -81,6 +85,7 @@
             );
         };
 
+        // Zone Label (Sidebar Text for OB/FVG)
         const ZoneLabel = ({ viewBox, zone }) => {
             const { y, height, width } = viewBox;
             if (height < 5) return null;
@@ -92,6 +97,7 @@
             );
         };
 
+        // Tooltip
         const CustomTooltip = ({ active, payload }) => {
             if (active && payload && payload.length) {
                 const data = payload[0].payload;
@@ -106,13 +112,9 @@
             return null;
         };
 
-        // --- 2. TRADING PANEL COMPONENT ---
+        // Trading Panel Component
         const TradingPanel = ({ currentPrice, balance, setBalance }) => {
-            // Load state from LocalStorage
-            const [positions, setPositions] = useState(() => {
-                const saved = localStorage.getItem('aura_positions');
-                return saved ? JSON.parse(saved) : [];
-            });
+            const [positions, setPositions] = useState([]);
             const [pendingOrders, setPendingOrders] = useState([]);
             const [orderType, setOrderType] = useState('MARKET');
             const [qty, setQty] = useState(1000);
@@ -121,32 +123,24 @@
             const [sl, setSl] = useState('');
             const [activeTab, setActiveTab] = useState('POSITIONS');
 
-            // Save state
-            useEffect(() => {
-                localStorage.setItem('aura_positions', JSON.stringify(positions));
-                localStorage.setItem('aura_balance', balance.toString());
-            }, [positions, balance]);
-
             useEffect(() => { if (orderType === 'LIMIT' && !limitPrice && currentPrice) setLimitPrice(currentPrice.toFixed(2)); }, [orderType, currentPrice]);
 
             useEffect(() => {
                 if (!currentPrice) return;
-                // Limit Fills
                 const newPositions = [];
                 const remainingOrders = pendingOrders.filter(order => {
-                    const px = parseFloat(order.limitPrice);
+                    const price = parseFloat(order.limitPrice);
                     let filled = false;
-                    if (order.side === 'LONG' && currentPrice <= px) filled = true;
-                    else if (order.side === 'SHORT' && currentPrice >= px) filled = true;
+                    if (order.side === 'LONG' && currentPrice <= price) filled = true;
+                    else if (order.side === 'SHORT' && currentPrice >= price) filled = true;
                     if (filled) {
-                        newPositions.push({ id: Date.now()+Math.random(), type: order.side, entry: px, size: order.size, leverage: order.leverage, tp: order.tp, sl: order.sl, timestamp: new Date().toLocaleTimeString() });
+                        newPositions.push({ id: Date.now()+Math.random(), type: order.side, entry: price, size: order.size, leverage: order.leverage, tp: order.tp, sl: order.sl, timestamp: new Date().toLocaleTimeString() });
                         return false; 
                     }
                     return true;
                 });
                 if (newPositions.length > 0) { setPendingOrders(remainingOrders); setPositions(prev => [...prev, ...newPositions]); }
 
-                // TP/SL Checks
                 const active = positions.filter(pos => {
                     let close = false;
                     if (pos.sl) { if (pos.type === 'LONG' && currentPrice <= pos.sl) close = true; if (pos.type === 'SHORT' && currentPrice >= pos.sl) close = true; }
@@ -203,7 +197,7 @@
             );
         };
 
-        // --- 3. MAIN DASHBOARD ---
+        // --- 7. MAIN DASHBOARD ---
         const SMCDashboard = () => {
             const [market, setMarket] = useState(null);
             const [status, setStatus] = useState("INIT");
@@ -216,11 +210,7 @@
             
             const [showLiquidity, setShowLiquidity] = useState(true);
             const [aiMode, setAiMode] = useState(false);
-            
-            const [balance, setBalance] = useState(() => {
-                const saved = localStorage.getItem('aura_balance');
-                return saved ? parseFloat(saved) : 10000;
-            });
+            const [balance, setBalance] = useState(10000);
 
             const wsRef = useRef(null);
             const chartContainerRef = useRef(null);
@@ -234,7 +224,6 @@
                         let cleanSymbol = symbol.toUpperCase();
                         if(!cleanSymbol.includes("/")) cleanSymbol += "/USDT";
                         
-                        // Use fetch instead of websocket for Vercel backend
                         const res = await fetch(`/api/scan?symbol=${cleanSymbol}&timeframe=1h&ai_mode=${aiMode}`);
                         const data = await res.json();
                         
@@ -251,21 +240,16 @@
                 return () => clearInterval(interval);
             }, [symbol, aiMode]);
 
-            // Mock symbols list (since websocket is gone)
             useEffect(() => {
-                setSymbolList(["BTC/USDT", "ETH/USDT", "SOL/USDT", "XRP/USDT", "BNB/USDT", "ADA/USDT", "DOGE/USDT", "AVAX/USDT"]);
+                setSymbolList(["BTC/USDT", "ETH/USDT", "SOL/USDT", "XRP/USDT", "BNB/USDT", "ADA/USDT", "DOGE/USDT", "AVAX/USDT", "LINK/USDT", "PEPE/USDT", "WIF/USDT"]);
             }, []);
 
             useEffect(() => { if(symbol) setFilteredSymbols(symbolList.filter(s=>s.includes(symbol.toUpperCase())).slice(0,50)); }, [symbol, symbolList]);
 
+            const selectSymbol = (s) => { setSymbol(s.split('/')[0]); setShowDropdown(false); };
+            const handleScan = () => { /* logic is handled by useEffect on symbol change */ };
             const toggleAi = () => setAiMode(!aiMode);
             const toggleTF = (tf) => { const newTfs = selectedTFs.includes(tf) ? (selectedTFs.length > 1 ? selectedTFs.filter(t => t !== tf) : selectedTFs) : [...selectedTFs, tf]; setSelectedTFs(newTfs); };
-
-            // Handle dropdown select
-            const selectSymbol = (s) => {
-                setSymbol(s.split('/')[0]); 
-                setShowDropdown(false);
-            };
 
             if (!market) return <div className="h-screen flex flex-col items-center justify-center bg-[#050505]"><div className="text-emerald-500 animate-pulse text-2xl font-bold">AURA-QX VERCEL</div><div className="text-zinc-500 text-xs mt-2">{status}...</div></div>;
 
@@ -276,9 +260,12 @@
 
             const handleMouseMove = (e) => {
                 if(e?.chartY && chartContainerRef.current) {
-                    const h = chartContainerRef.current.clientHeight - 35; // margin offset
-                    const p = e.chartY - 15;
-                    if(h>0 && isFinite(maxPrice)) setCursorPrice(maxPrice - (p/h)*(maxPrice-minPrice));
+                    const h = chartContainerRef.current.clientHeight - 30; // Chart height minus margins
+                    const p = e.chartY - 15; // Mouse Y relative to chart top margin
+                    if(h>0 && isFinite(maxPrice)) {
+                        const price = maxPrice - (p/h)*(maxPrice-minPrice);
+                        setCursorPrice(price);
+                    }
                 }
             };
 
@@ -288,7 +275,7 @@
                         <div className="flex items-center gap-6"><div className="flex flex-col flex-shrink-0"><span className="font-bold text-emerald-500 tracking-wider text-lg">AURA-QX</span><span className="text-[10px] text-zinc-500">PRO TERMINAL</span></div><div className="h-10 w-[1px] bg-white/10"></div><div className="relative"><span className="text-[10px] text-zinc-400 block mb-1">ASSET PAIR</span><input type="text" value={symbol} onFocus={()=>setShowDropdown(true)} onChange={e=>{setSymbol(e.target.value.toUpperCase()); setShowDropdown(true)}} className="input-glass px-3 py-1.5 rounded w-40 text-sm font-mono outline-none focus:border-emerald-500" />{showDropdown && filteredSymbols.length>0 && <div className="dropdown-glass rounded shadow-xl mt-1">{filteredSymbols.map(s=><div key={s} onClick={()=>{selectSymbol(s)}} className="dropdown-item">{s}</div>)}</div>}</div></div>
                         <div className="flex items-center gap-3"><span className="text-[10px] text-zinc-400">TIMEFRAMES</span><div className="flex bg-black/50 rounded p-1.5 gap-1">{availableTFs.map(tf => (<button key={tf} onClick={() => toggleTF(tf)} className={`text-xs px-3 py-1.5 rounded font-bold transition-colors ${selectedTFs.includes(tf) ? 'btn-active' : 'btn-inactive hover:bg-white/10'}`}>{tf}</button>))}</div></div>
                         <div className="flex items-center gap-4"><div className="flex flex-col"><span className="text-[10px] text-zinc-400 mb-1">VISUALS</span><div className="flex gap-2"><button onClick={()=>setShowLiquidity(!showLiquidity)} className={`px-3 py-1 rounded text-[10px] font-bold border transition-all ${showLiquidity ? 'bg-yellow-500/10 border-yellow-500 text-yellow-500' : 'border-zinc-700 text-zinc-500 hover:bg-zinc-800'}`}>LIQ</button><button onClick={toggleAi} className={`px-3 py-1 rounded text-[10px] font-bold border transition-all flex items-center gap-1 ${aiMode ? 'bg-purple-600/20 border-purple-500 text-purple-300 shadow-[0_0_10px_rgba(168,85,247,0.3)]' : 'border-zinc-700 text-zinc-500 hover:bg-zinc-800'}`}>AI</button></div></div></div>
-                        <div className="flex items-center gap-6"><div className="text-right border-l border-white/10 pl-6"><div className="text-3xl font-bold text-white tracking-tighter">${market.price.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}</div>
+                        <div className="flex items-center gap-6"><button onClick={()=>handleScan()} className="bg-emerald-600 hover:bg-emerald-500 text-white px-8 py-2 rounded text-sm font-bold shadow-lg shadow-emerald-900/20">SCAN</button><div className="text-right border-l border-white/10 pl-6"><div className="text-3xl font-bold text-white tracking-tighter">${market.price.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}</div>
                         <div className={`text-[9px] font-mono text-center px-1 rounded mt-1 ${market.is_simulation ? 'bg-red-500/20 text-red-400' : 'bg-emerald-500/20 text-emerald-400'}`}>{market.is_simulation ? 'DATA: SIMULATED' : 'DATA: LIVE BINANCE'}</div>
                         </div></div>
                     </div>
